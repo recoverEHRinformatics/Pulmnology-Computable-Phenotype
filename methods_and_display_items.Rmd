@@ -1,0 +1,1436 @@
+---
+title: "RECOVER PCORnet Adult EHR Hub – Pulmonology Manuscript Display Items"
+author: "Colby Lewis V" 
+pi: "RECOVER; Beth Nauman "
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: 
+  wcmtheme::wcm_html: 
+    toc: true
+    toc_float: true
+---
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(readxl)
+library(gtsummary)
+
+library(survival)
+library(survminer)
+library(cards)
+
+library(UpSetR)
+library(boot)
+```
+
+
+
+
+## Load Data
+
+
+```{r, include=F, eval=T}
+# Load full CP
+raw_cp_df_inc = read.csv("...", check.names=T)
+raw_cp_df_inc$full_patid = paste(raw_cp_df_inc$site, "_", raw_cp_df_inc$patid, sep="")
+
+print("loaded participants")
+print(nrow(raw_cp_df_inc))
+print("sites")
+print(raw_cp_df_inc$site %>% unique())
+```
+
+
+## Tables for Incidence
+
+### Category defn
+
+```{r, include=F, eval=T}
+raw_cp_df_inc = raw_cp_df_inc %>% #make sure out site dont slip in
+  filter(flag_baseline_pulmonary == 0)
+
+raw_cp_df_inc = raw_cp_df_inc %>% mutate(
+  ymd_index = ymd(index.date),
+  year_index = case_when(
+    year(ymd_index) %in% c(2020, 2021, 2022, 2023) ~ year(ymd_index)
+  ),
+  index_date = as.Date(index.date, format = "%Y-%m-%d")
+) %>% filter(
+  ymd_index <= as.Date("2023-02-01"),
+  !is.na(year_index),
+  age >= 20,
+  index_date >= as.Date("2020-03-01"),
+  !is.na(dob)
+)
+
+cp_df = raw_cp_df_inc %>%
+  mutate(year_index == factor(year_index))
+
+cp_df = cp_df %>%
+  mutate(clv_age = case_when(
+    age < 40 ~ "20-39 years",
+    age < 55 ~ "40-54 years",
+    age < 65 ~ "55-64 years",
+    age < 75 ~ "65-74 years",
+    age < 85 ~ "75-84 years",
+    age >= 85 ~ "85+ years"
+  ))
+
+cp_df = cp_df %>%
+  mutate(clv_sex = case_when(
+    Female == 1 ~ "Female",
+    Male == 1 ~ "Male",
+    T ~ "Other/Missing"
+  ))
+
+cp_df = cp_df %>%
+  mutate(clv_race = case_when(
+    Asian == 1 ~ "Asian",
+    `Black.or.African.American` == 1 ~ "Black or African American",
+    `White` == 1 ~ "White",
+    `Other` == 1 ~ "Other",
+    `Missing` == 1 ~ "Missing"
+  ))
+
+cp_df = cp_df %>%
+  mutate(clv_hisp = case_when(
+    `Hispanic..Yes` == 1 ~ "Hispanic: Yes",
+    `Hispanic..No` == 1 ~ "Hipanic: No",
+    `Hispanic..Other.Missing` == 1 ~ "Hispanic: Other/Missing"
+  ))
+
+cp_df = cp_df %>%
+  mutate(out_bins = case_when(
+    outpatient.no. == 0 ~ "0",
+    outpatient.no. == 1 ~ "1",
+    outpatient.no. < 6 ~ "2-5",
+    outpatient.no. < 21 ~ "6-20",
+    outpatient.no. > 20 ~ ">20"
+  ))
+
+cp_df = cp_df %>%
+  mutate(em_bin = case_when(
+    is.na(`emergency.visits.no.`) ~ "Missing",
+    `emergency.visits.no.` > 1 ~ "2 or more",
+    `emergency.visits.no.` == 1 ~ "1",
+    `emergency.visits.no.` == 0 ~ "0"
+  ))
+
+cp_df = cp_df %>%
+  mutate(bmi_clv = case_when(
+    is.na(bmi) ~ "Missing",
+    bmi < 18.5  ~ "Underweight (<18.5)",
+    bmi < 25 ~ "Normal range (18.5 to <25)",
+    bmi < 30 ~ "Overweight (25 to <30)",
+    bmi >= 30  ~ "Obese (>30)"
+  ))
+```
+
+### Excess burden bootstrap
+
+#### combined:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+burden_func_fast = function(data, indices, covid_bool) {
+  sample_data = data[indices, ]
+  percent = mean(sample_data$flag_pulmonary == 1) * 100
+  
+  return(percent)
+}
+
+
+burden_df = cp_df %>%
+  select(hospitalized, covid, flag_pulmonary)
+
+###################################################
+this_df = burden_df %>% filter(covid==0)
+results_0 = boot::boot(data=this_df,
+                      statistic=burden_func_fast,
+                      R=1000)
+print(boot.ci(results_0, type="basic"))
+###################################################
+this_df = burden_df %>% filter(covid==1)
+results_1 = boot::boot(data=this_df,
+                      statistic=burden_func_fast,
+                      R=5000)
+print(boot.ci(results_1, type="basic"))
+
+```
+
+#### hosp:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+hosp_df = burden_df %>%
+  filter(hospitalized == 1)
+
+###################################################
+this_df = hosp_df %>% filter(covid==0)
+results_0 = boot::boot(data=this_df,
+                      statistic=burden_func_fast,
+                      R=1000)
+print(boot.ci(results_0, type="basic"))
+###################################################
+this_df = hosp_df %>% filter(covid==1)
+results_1 = boot::boot(data=this_df,
+                      statistic=burden_func_fast,
+                      R=5000)
+print(boot.ci(results_1, type="basic"))
+```
+
+#### nonhosp:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+nohosp_df = burden_df %>%
+  filter(hospitalized == 0)
+
+###################################################
+this_df = nohosp_df %>% filter(covid==0)
+results_0 = boot::boot(data=this_df,
+                      statistic=burden_func_fast,
+                      R=1000)
+print(boot.ci(results_0, type="basic"))
+###################################################
+this_df = nohosp_df %>% filter(covid==1)
+results_1 = boot::boot(data=this_df,
+                      statistic=burden_func_fast,
+                      R=5000)
+print(boot.ci(results_1, type="basic"))
+```
+
+
+### Table A. Demographic characteristics of patients without pre-existing COPD or Asthma by COVID status
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+ta_inc_df = cp_df %>%
+  select(covid,
+         age,
+         clv_age,
+         clv_race,
+         clv_hisp,
+         clv_sex)
+
+ta_inc = ta_inc_df %>%
+  tbl_summary(by = covid, missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+                label = list(
+                        clv_age ~ "Age groups",
+                        clv_sex ~ "Sex",
+                        clv_race ~ "Race",
+                        clv_hisp ~ "Hispanic Ethnicity"
+                      ),
+                digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+ta_inc
+```
+
+### Table B. Clinical characteristics of patients without pre-existing COPD or Asthma by COVID status 
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tb_inc_df = cp_df %>%
+  select(covid,
+         year_index,
+         hospitalized, 
+         criticalcare,
+         ventilation,
+         out_bins,
+         em_bin,
+         `emergency.visits.no.`,
+         bmi_clv,     
+         `Smoker..never`,
+         `Smoker..current`,
+         `Smoker..former`,
+         `Smoker..missing`,
+         death)
+
+tb_inc = tb_inc_df %>%
+  tbl_summary(by = covid,
+                include = -c(criticalcare, ventilation),
+                missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+tb_inc
+```
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tb_inc_df = tb_inc_df %>% filter(hospitalized==1)
+
+tb_inc = tb_inc_df %>%
+  tbl_summary(by = covid,
+                include = c(criticalcare, ventilation),
+                missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+tb_inc
+```
+
+### Table C. Demographic characteristics of COVID+ patients with incident COPD or Asthma compared to COVID+ patients without evidence of condition 31 – 180 days post-COVID
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tc_inc_df = cp_df %>%
+  filter(covid==1) %>%
+  select(flag_pulmonary,
+         age,
+         clv_age,
+         clv_race,
+         clv_hisp,
+         clv_sex)
+
+tc_inc = tc_inc_df %>%
+  tbl_summary(by = flag_pulmonary, missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+                label = list(
+                      clv_age ~ "Age groups",
+                      clv_sex ~ "Sex",
+                      clv_race ~ "Race",
+                      clv_hisp ~ "Hispanic Ethnicity"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+tc_inc
+```
+
+### Table D. Clinical characteristics of COVID+ patients with incident COPD or Asthma compared to COVID+ patients without evidence of condition 31 – 180 days post-COVID
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+td_inc_df = cp_df %>%
+  filter(covid==1) %>%
+  select(flag_pulmonary,
+         year_index,
+         hospitalized, 
+         criticalcare,
+         ventilation,
+         out_bins,
+         em_bin,
+         `emergency.visits.no.`,
+         bmi_clv,     
+         `Smoker..never`,
+         `Smoker..current`,
+         `Smoker..former`,
+         `Smoker..missing`,
+         death)
+
+td_inc = td_inc_df %>%
+  tbl_summary(by = flag_pulmonary,
+                include = -c(criticalcare, ventilation),
+                missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+td_inc
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+td_inc_df = td_inc_df %>% filter(hospitalized==1)
+
+td_inc = td_inc_df %>%
+  tbl_summary(by = flag_pulmonary,
+                include = c(criticalcare, ventilation),
+                missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+td_inc
+```
+
+### Table X. Incidence result components
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+cp_df = cp_df %>% mutate(
+  inc_outcome_path = case_when(
+    ###################################
+    ((flag_pulmonary_asthma_dx == 1) | (flag_pulmonary_asthma_dx_med == 1))
+          & ((flag_pulmonary_copd_dx == 0) & (flag_pulmonary_bronchiectasis_dx == 0)) ~ "Asthma is only diagnosis",
+    ###################################
+    ((flag_pulmonary_copd_dx == 1) | (flag_pulmonary_copd_dx_med == 1))
+          & ((flag_pulmonary_asthma_dx == 0) & (flag_pulmonary_bronchiectasis_dx == 0)) ~ "COPD is only diagnosis",
+    ###################################
+    ((flag_pulmonary_bronchiectasis_dx == 1) | (flag_pulmonary_bronchiectasis_dx_med == 1))
+          & ((flag_pulmonary_asthma_dx == 0) & (flag_pulmonary_copd_dx == 0)) ~ "Bronchiectasis is only diagnosis",
+    ###################################
+    (
+      (flag_pulmonary_copd_dx == 1) | (flag_pulmonary_asthma_dx == 1) | (flag_pulmonary_bronchiectasis_dx == 1)
+    ) ~ "Two or more dx among Asthma, COPD, or bronchiectasis",
+    ###################################
+    (flag_pulmonary_med == 1)
+          & ((flag_pulmonary_copd_dx == 0) & (flag_pulmonary_bronchiectasis_dx == 0) & (flag_pulmonary_asthma_dx == 0)) ~ "Qualifying medication only (no dx in record)",
+    ###################################
+    T ~ "Qualifying medication only (no dx in record)" #<100 or 0.01%
+  )
+)
+
+tx_inc_df = cp_df %>%
+  select(
+    covid,
+    flag_pulmonary,
+    inc_outcome_path,
+    hospitalized
+  )
+
+tx_inc = tx_inc_df %>%
+  tbl_summary(
+    by=covid,
+    include = c(flag_pulmonary),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}% ({n})"
+    ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+  ) %>% add_p()
+
+tx_inc
+```
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tx_inc_df = tx_inc_df %>% filter(flag_pulmonary==1)
+
+tx_inc = tx_inc_df %>%
+  tbl_summary(
+    by=covid,
+    include = c(inc_outcome_path),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}% ({n})"
+    ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+  ) %>% add_p()
+
+tx_inc
+```
+
+### Upset plot of inclusion
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+list_input = list(
+  any_asthma_DX = which(as.logical(cp_df$flag_pulmonary_asthma_dx == 1)),
+  any_copd_DX = which(as.logical(cp_df$flag_pulmonary_copd_dx == 1)),
+  any_bronchiectasis_DX = which(as.logical(cp_df$flag_pulmonary_bronchiectasis_dx == 1)),
+  any_med = which(as.logical(cp_df$flag_pulmonary_med))
+)
+
+upset(fromList(list_input), nsets=90, order.by="freq")
+```
+
+### PPV Calculation
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+###############################################################
+## Bring in redcap data, clean
+raw_redcap_inc_df = read.csv("...", check.names = T)
+colnames(raw_redcap_inc_df)[1] = "redcap_record_id"
+
+filt_rerev_df = raw_redcap_inc_df %>% filter(
+  !is.na(ssid_i) & ssid_i != "", # redcap ID isn't broken
+  !is.na(dob_i) & dob_i != "", # you have a DOB with minimal quality
+  "m" %in% sex_i | "M" %in% sex_i, # female/Female/male/Male
+  incidence_complete == 2, # 2 means the reviewer said they did it fully
+  index_lab_i %in% c(0,1) # covid y/n is populated
+)
+
+###############################################################
+## Compute incident outcome
+redcap_inc_df = filt_rerev_df %>% mutate(
+  # baseline
+  baseline_poor_airflow = case_when(
+    as.numeric(pulm_inc_fev1) / as.numeric(pulm_inc_fvc) < 0.7 ~ T
+  ),
+  # followup
+  followup_poor_airflow = case_when(
+    as.numeric(pulm_postind_fev1_val) / as.numeric(pulm_postind_fev_val) < 0.7 ~ T
+  )
+) %>% mutate(
+   # handle NA structure
+   pulm_postind_copd = coalesce(pulm_postind_copd, 0),
+   pulm_postind_rx = coalesce(pulm_postind_rx, 0),
+   followup_poor_airflow = coalesce(followup_poor_airflow, 0),
+   pulm_dx_prendex_i = coalesce(pulm_dx_prendex_i, 0),
+   asthma_pre = coalesce(asthma_pre, 0),
+   baseline_poor_airflow = coalesce(baseline_poor_airflow, 0),
+) %>% select(
+  ssid_i, redcap_record_id,
+  pulm_postind_copd, pulm_postind_rx, followup_poor_airflow, pulm_dx_prendex_i, asthma_pre, baseline_poor_airflow
+)
+
+# redcap inc calc
+redcap_inc_df$redcap_incident = (redcap_inc_df$pulm_postind_copd | redcap_inc_df$pulm_postind_rx | redcap_inc_df$followup_poor_airflow) & !(redcap_inc_df$pulm_dx_prendex_i | redcap_inc_df$asthma_pre | redcap_inc_df$baseline_poor_airflow)
+
+###############################################################
+## Compute PPV (redcap only given CP+ cases)
+redcap_inc_df = redcap_inc_df %>% filter(!is.na(ssid_i) & ssid_i != "")
+
+denom = redcap_inc_df %>% nrow()
+tp = redcap_inc_df %>% filter(redcap_incident == T) %>% nrow()
+
+print("PPV is # true positives / (false and true positive)")
+print(tp/denom)
+print("Sample size:")
+print(denom)
+```
+ 
+#### Bootstrap PPV
+
+```{r}
+
+ppv_func = function(data, indices) {
+  
+  sample_data = data[indices, ] # resample the data
+  denom = sample_data %>% nrow()
+  tp = sample_data %>% filter(redcap_incident == T) %>% nrow()
+  
+  #print("PPV is # true positives / (false and true positive)")
+  this_ppv = tp/denom
+  return(this_ppv)
+}
+# bootstrapping with 1000 replications
+results = boot::boot(data=redcap_inc_df,
+                      statistic=ppv_func,
+                      R=5000)
+
+# view results
+results
+plot(results)
+
+# get 95% confidence interval
+boot.ci(results, type="basic")
+```
+
+### Description of PPV cohort
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+descrip_df = filt_rerev_df %>% select(
+  sex_i,
+  dob_i,
+  index_lab_negative_date_i,
+  index_lab_positive_date_i
+)
+
+descrip_df = descrip_df %>%
+  mutate(
+    dob_i = ymd(dob_i), # Convert to Date
+    index_lab_negative_date_i = ymd(index_lab_negative_date_i), # Convert to Date
+    index_lab_positive_date_i = ymd(index_lab_positive_date_i), # Convert to Date
+    index_date = coalesce(index_lab_negative_date_i, index_lab_positive_date_i), # Pick non-NA value
+    age_at_index = as.numeric(difftime(index_date, dob_i, units = "days")) / 365.25, # Calculate age
+    sex_unified = case_when(
+      sex_i == "Female" ~ "male",
+      sex_i == "Male" ~ "male",
+      sex_i == "female" ~ "female",
+      sex_i == "female " ~ "female",
+      sex_i == "FEMALE" ~ "female",
+      sex_i == "M" ~ "male",
+      sex_i == "male " ~ "male",
+      sex_i == "male" ~ "male",
+      sex_i == "F" ~ "female",      
+      sex_i == "FEMALE " ~ "female",
+      sex_i == "MALE " ~ "male",
+      sex_i == "MALE" ~ "male",
+      sex_i == "Female " ~ "female"
+    ),
+    age_brackets = case_when(
+      age_at_index < 40 ~ "20-39 years",
+      age_at_index < 55 ~ "40-54 years",
+      age_at_index < 65 ~ "55-64 years",
+      age_at_index < 75 ~ "65-74 years",
+      age_at_index < 85 ~ "75-84 years",
+      age_at_index >= 85 ~ "85+ years"
+    )
+  )
+
+descrip_df %>% select(sex_unified, age_brackets) %>% tbl_summary()
+```
+
+
+## Tables for Worsening
+
+```{r, include=F, eval=T}
+# Load full CP
+raw_cp_df_ex = read.csv("...", check.names=T)
+raw_cp_df_ex$full_patid = paste(raw_cp_df_ex$site, "_", raw_cp_df_ex$patid, sep="")
+raw_cp_df_ex = raw_cp_df_ex %>%
+  filter(!site %in% c('miami', 'usf'))
+
+raw_cp_df_ex = raw_cp_df_ex %>% mutate(
+  ymd_index = ymd(index.date),
+  year_index = case_when(
+    year(ymd_index) %in% c(2020, 2021, 2022, 2023) ~ year(ymd_index)
+  ),
+  index_date = as.Date(index.date, format = "%Y-%m-%d")
+) %>% filter(
+  ymd_index <= as.Date("2023-02-01"),
+  !is.na(year_index),
+  age >= 20,
+  index_date >= as.Date("2020-03-01"),
+  !is.na(dob)
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+cp_df = raw_cp_df_ex %>%
+  mutate(year_index == factor(year_index))
+
+cp_df = cp_df %>%
+  mutate(clv_age = case_when(
+    age < 40 ~ "20-39 years",
+    age < 55 ~ "40-54 years",
+    age < 65 ~ "55-64 years",
+    age < 75 ~ "65-74 years",
+    age < 85 ~ "75-84 years",
+    age >= 85 ~ "85+ years"
+  ))
+
+cp_df = cp_df %>%
+  mutate(clv_sex = case_when(
+    Female == 1 ~ "Female",
+    Male == 1 ~ "Male",
+    T ~ "Other/Missing"
+  ))
+
+cp_df = cp_df %>%
+  mutate(clv_race = case_when(
+    Asian == 1 ~ "Asian",
+    `Black.or.African.American` == 1 ~ "Black or African American",
+    `White` == 1 ~ "White",
+    `Other` == 1 ~ "Other",
+    `Missing` == 1 ~ "Missing"
+  ))
+
+cp_df = cp_df %>%
+  mutate(clv_hisp = case_when(
+    `Hispanic..Yes` == 1 ~ "Hispanic: Yes",
+    `Hispanic..No` == 1 ~ "Hipanic: No",
+    `Hispanic..Other.Missing` == 1 ~ "Hispanic: Other/Missing"
+  ))
+
+cp_df = cp_df %>%
+  mutate(out_bins = case_when(
+    outpatient.no. == 0 ~ "0",
+    outpatient.no. == 1 ~ "1",
+    outpatient.no. < 6 ~ "2-5",
+    outpatient.no. < 21 ~ "6-20",
+    outpatient.no. > 20 ~ ">20"
+  ))
+
+cp_df = cp_df %>%
+  mutate(em_bin = case_when(
+    is.na(`emergency.visits.no.`) ~ "Missing",
+    `emergency.visits.no.` > 1 ~ "2 or more",
+    `emergency.visits.no.` == 1 ~ "1",
+    `emergency.visits.no.` == 0 ~ "0"
+  ))
+
+cp_df = cp_df %>%
+  mutate(bmi_clv = case_when(
+    is.na(bmi) ~ "Missing",
+    bmi < 18.5  ~ "Underweight (<18.5)",
+    bmi < 25 ~ "Normal range (18.5 to <25)",
+    bmi < 30 ~ "Overweight (25 to <30)",
+    bmi >= 30  ~ "Obese (>30)"
+  ))
+```
+
+### Excess burden bootstrap:
+
+#### combined:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+burden_func_fast_ex = function(data, indices, covid_bool) {
+  sample_data = data[indices, ]
+  percent = mean(sample_data$flag_worsening_pulmonary == 1) * 100
+  
+  return(percent)
+}
+
+
+burden_df = cp_df %>%
+  select(hospitalized, covid, flag_worsening_pulmonary)
+
+###################################################
+this_df = burden_df %>% filter(covid==0)
+results_0 = boot::boot(data=this_df,
+                      statistic=burden_func_fast_ex,
+                      R=1000)
+print(boot.ci(results_0, type="basic"))
+###################################################
+this_df = burden_df %>% filter(covid==1)
+results_1 = boot::boot(data=this_df,
+                      statistic=burden_func_fast_ex,
+                      R=5000)
+print(boot.ci(results_1, type="basic"))
+```
+
+#### hosp:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+hosp_df = burden_df %>%
+  filter(hospitalized == 1)
+
+###################################################
+this_df = hosp_df %>% filter(covid==0)
+results_0 = boot::boot(data=this_df,
+                      statistic=burden_func_fast_ex,
+                      R=1000)
+print(boot.ci(results_0, type="basic"))
+###################################################
+this_df = hosp_df %>% filter(covid==1)
+results_1 = boot::boot(data=this_df,
+                      statistic=burden_func_fast_ex,
+                      R=5000)
+print(boot.ci(results_1, type="basic"))
+```
+
+#### nonhosp:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+nohosp_df = burden_df %>%
+  filter(hospitalized == 0)
+
+###################################################
+this_df = nohosp_df %>% filter(covid==0)
+results_0 = boot::boot(data=this_df,
+                      statistic=burden_func_fast_ex,
+                      R=1000)
+print(boot.ci(results_0, type="basic"))
+###################################################
+this_df = nohosp_df %>% filter(covid==1)
+results_1 = boot::boot(data=this_df,
+                      statistic=burden_func_fast_ex,
+                      R=5000)
+print(boot.ci(results_1, type="basic"))
+```
+
+
+### Table E. Demographic characteristics of patients with pre-existing COPD or Asthma by COVID status
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+ta_ex_df = cp_df %>%
+  select(covid,
+         age,
+         clv_age,
+         clv_race,
+         clv_hisp,
+         clv_sex)
+
+#######################################################
+
+ta_ex = ta_ex_df %>%
+  tbl_summary(by = covid, missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+                label = list(
+                      clv_age ~ "Age groups",
+                      clv_sex ~ "Sex",
+                      clv_race ~ "Race",
+                      clv_hisp ~ "Hispanic Ethnicity"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+ta_ex
+```
+
+
+
+### Table F. Clinical characteristics of patients with pre-existing COPD or Asthma by COVID status 
+
+- table compiled from multiple tbl_summary components
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+cp_df = cp_df %>% mutate(
+  baseline_path = case_when(
+    ###################################
+    ((flag_pulmonary_asthma_dx == 1) | (flag_pulmonary_asthma_dx_med == 1))
+          & ((flag_pulmonary_copd_dx == 0) & (flag_pulmonary_bronchiectasis_dx == 0)) ~ "Asthma is only diagnosis",
+    ###################################
+    ((flag_pulmonary_copd_dx == 1) | (flag_pulmonary_copd_dx_med == 1))
+          & ((flag_pulmonary_asthma_dx == 0) & (flag_pulmonary_bronchiectasis_dx == 0)) ~ "COPD is only diagnosis",
+    ###################################
+    ((flag_pulmonary_bronchiectasis_dx == 1) | (flag_pulmonary_bronchiectasis_dx_med == 1))
+          & ((flag_pulmonary_asthma_dx == 0) & (flag_pulmonary_copd_dx == 0)) ~ "Bronchiectasis is only diagnosis",
+    ###################################
+    (
+      (flag_pulmonary_copd_dx == 1) | (flag_pulmonary_asthma_dx == 1) | (flag_pulmonary_bronchiectasis_dx == 1)
+    ) ~ "Two or more dx among Asthma, COPD, or bronchiectasis",
+    ###################################
+    (flag_pulmonary_med == 1)
+          & ((flag_pulmonary_copd_dx == 0) & (flag_pulmonary_bronchiectasis_dx == 0) & (flag_pulmonary_asthma_dx == 0)) ~ "Qualifying medication only (no dx in record)",
+    ###################################
+    T ~ "Qualifying medication only (no dx in record)" #<100 or 0.01%
+  )
+)
+
+
+tb_ex_df = cp_df %>%
+  select(covid,
+         baseline_path,
+         year_index,
+         hospitalized, 
+         criticalcare,
+         ventilation,
+         out_bins,
+         em_bin,
+         `emergency.visits.no.`,
+         bmi_clv,     
+         `Smoker..never`,
+         `Smoker..current`,
+         `Smoker..former`,
+         `Smoker..missing`,
+         death)
+
+tb_ex = tb_ex_df %>%
+  tbl_summary(by = covid,
+              include = -c(criticalcare, ventilation),
+              missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+tb_ex
+```
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=F}
+cp_df %>% filter(baseline_path == "Multiple criteria (test)") %>%
+  select(flag_pulmonary_med,
+         flag_pulmonary_copd_dx,
+         flag_pulmonary_bronchiectasis_dx,
+         flag_pulmonary_asthma_dx,
+         flag_pulmonary_asthma_dx_med, # or these into the 1st 3 groups
+         flag_pulmonary_copd_dx_med,
+         flag_pulmonary_bronchiectasis_dx_med)
+```
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tb_ex_df = tb_ex_df %>% filter(hospitalized==1)
+
+tb_ex = tb_ex_df %>%
+  tbl_summary(by = covid,
+                include = c(criticalcare, ventilation),
+                missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+tb_ex
+```
+
+### Table G. Demographic characteristics of COVID+ patients with pre-existing COPD or Asthma with exacerbation of condition versus no evidence of exacerbation 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tc_ex_df = cp_df %>%
+  filter(covid==1) %>%
+  select(flag_worsening_pulmonary,
+         age,
+         clv_age,
+         clv_race,
+         clv_hisp,
+         clv_sex)
+
+tc_ex = tc_ex_df %>%
+  tbl_summary(by = flag_worsening_pulmonary, missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+                label = list(
+                      clv_age ~ "Age groups",
+                      clv_sex ~ "Sex",
+                      clv_race ~ "Race",
+                      clv_hisp ~ "Hispanic Ethnicity"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+tc_ex
+```
+
+### Table H. Clinical characteristics of COVID+ patients with pre-existing COPD or Asthma with exacerbation of condition versus no evidence of exacerbation 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+td_ex_df = cp_df %>%
+  filter(covid==1) %>%
+  select(flag_worsening_pulmonary,
+         baseline_path,
+         year_index,
+         hospitalized, 
+         criticalcare,
+         ventilation,
+         out_bins,
+         em_bin,
+         `emergency.visits.no.`,
+         bmi_clv,     
+         `Smoker..never`,
+         `Smoker..current`,
+         `Smoker..former`,
+         `Smoker..missing`,
+         death)
+
+td_ex = td_ex_df %>%
+  tbl_summary(by = flag_worsening_pulmonary,
+              include = -c(criticalcare, ventilation),
+              missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+td_ex
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+td_ex_df = td_ex_df %>%
+  filter(hospitalized==1)
+
+td_ex = td_ex_df %>%
+  tbl_summary(by = flag_worsening_pulmonary,
+              include = c(criticalcare, ventilation),
+              missing = "no",
+                statistic = list(
+                  all_continuous() ~ "{mean} ({sd})",
+                  all_categorical() ~ "{p}% ({n})"
+                ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+              ) %>%
+        add_p()
+
+td_ex
+```
+
+### Table I. Worsening results [Title TBD]
+
+- This is distinct from the tables X/F/H above. This focuses on "how do you worsen?"
+- Mutually exclusive split vs greedy split
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=F}
+tx_ex_df = cp_df %>%
+  select(
+    covid,
+    flag_worsening_pulmonary,
+    flag_outcome_asthma_dx,
+    flag_outcome_copd_dx,
+    flag_outcome_infectious_pneumonia_dx,
+    flag_outcome_respiratory_failure_dx,
+    flag_outcome_med,
+    hospitalized
+  )
+
+# Mutually exclusive split: 8onlydx, 9onlydx, (8|9|10|11dx), (12 medonly). Check 13/14 parallel to 8/9.
+
+tx_ex_df = tx_ex_df %>% mutate(
+  worsening_mode = case_when(
+    ####################################
+      ((flag_outcome_asthma_dx == 1))
+        & ((flag_outcome_infectious_pneumonia_dx == 0) & (flag_outcome_respiratory_failure_dx == 0) & (flag_outcome_med == 0)) ~ "Asthma DX only",
+    ####################################
+      ((flag_outcome_copd_dx == 1))
+        & ((flag_outcome_infectious_pneumonia_dx == 0) & (flag_outcome_respiratory_failure_dx == 0) & (flag_outcome_med == 0)) ~ "COPD DX only",
+    ####################################
+      ((flag_outcome_med == 1))
+        & ((flag_outcome_infectious_pneumonia_dx == 0) & (flag_outcome_respiratory_failure_dx == 0) & (flag_outcome_asthma_dx == 0) & (flag_outcome_copd_dx == 0)) ~ "Medication only",
+    ####################################
+      ((flag_outcome_infectious_pneumonia_dx == 1) | (flag_outcome_respiratory_failure_dx == 1))
+        & ((flag_outcome_med == 0) & (flag_outcome_asthma_dx == 0) & (flag_outcome_copd_dx == 0)) ~ "Other DX only",
+    ####################################
+      T ~ "Multiple criteria")
+)
+
+tx_ex = tx_ex_df %>%
+  filter(hospitalized == 0) %>%
+  tbl_summary(
+    by=covid,
+    include = c(flag_worsening_pulmonary),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}% ({n})"
+    ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+  ) %>% add_p()
+
+tx_ex
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=F}
+tx_ex_df = tx_ex_df %>% filter(flag_worsening_pulmonary==1)
+
+tx_ex = tx_ex_df %>%
+  tbl_summary(
+    by=covid,
+    include = c(worsening_mode),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}% ({n})"
+    ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+  ) %>% add_p()
+
+tx_ex
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tx_ex_df = cp_df %>%
+  select(
+    covid,
+    flag_worsening_pulmonary,
+    flag_outcome_asthma_dx,
+    flag_outcome_copd_dx,
+    flag_outcome_infectious_pneumonia_dx,
+    flag_outcome_respiratory_failure_dx,
+    flag_outcome_med,
+    flag_outcome_asthma_med,
+    flag_outcome_copd_med
+  )
+
+#  Greedy groups, top to bottom: 8onlydx, 9onlydx, (8|9|10|11dx), (12 medonly). Check 13/14 parallel to 8/9.
+
+tx_ex_df = tx_ex_df %>% mutate(
+  worsening_mode_greedy = case_when(
+    ###################################
+    ((flag_outcome_asthma_dx == 1))
+          & (
+             (flag_outcome_copd_dx == 0) &
+             (flag_outcome_infectious_pneumonia_dx == 0) & 
+             (flag_outcome_respiratory_failure_dx == 0) 
+            ) ~ "Asthma is only diagnosis",
+    ###################################
+    ((flag_outcome_copd_dx == 1))
+          & (
+             (flag_outcome_asthma_dx == 0) &
+             (flag_outcome_infectious_pneumonia_dx == 0) & 
+             (flag_outcome_respiratory_failure_dx == 0) 
+            ) ~ "COPD is only diagnosis",
+    ###################################
+    ((flag_outcome_infectious_pneumonia_dx == 1))
+          & (
+             (flag_outcome_asthma_dx == 0) &
+             (flag_outcome_copd_dx == 0) & 
+             (flag_outcome_respiratory_failure_dx == 0)
+            ) ~ "infectious_pneumonia is only diagnosis",
+    ###################################
+    ((flag_outcome_respiratory_failure_dx == 1))
+          & (
+             (flag_outcome_asthma_dx == 0) &
+             (flag_outcome_copd_dx == 0) & 
+             (flag_outcome_infectious_pneumonia_dx == 0)
+            ) ~ "respiratory_failure_dx is only diagnosis",
+    ###################################
+    (
+      (flag_outcome_respiratory_failure_dx == 1) |
+      (flag_outcome_asthma_dx == 1) |
+      (flag_outcome_copd_dx == 1) | 
+      (flag_outcome_infectious_pneumonia_dx == 1) 
+    ) ~ "Two or more dx among Asthma, COPD, pneu, or resp_fail",
+    ###################################
+    (flag_outcome_med == 1) & 
+      (
+        (flag_outcome_respiratory_failure_dx == 0) &
+        (flag_outcome_asthma_dx == 0) &
+        (flag_outcome_copd_dx == 0) & 
+        (flag_outcome_infectious_pneumonia_dx == 0) 
+      ) ~ "Qualifying medication only (no dx in record)",
+    ###################################
+    T ~ "Qualifying medication only (no dx in record)" #<100 or 0.01%
+  )
+)
+
+tx_ex = tx_ex_df %>%
+  tbl_summary(
+    by=covid,
+    include = c(flag_worsening_pulmonary),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}% ({n})"
+    ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+  ) %>% add_p()
+
+tx_ex
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+tx_ex_df = tx_ex_df %>% filter(flag_worsening_pulmonary==1)
+
+tx_ex = tx_ex_df %>%
+  tbl_summary(
+    by=covid,
+    include = c(worsening_mode_greedy),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{p}% ({n})"
+    ),
+              digits = list(
+                  all_continuous() ~ c(1, 0),
+                  all_categorical() ~ c(1, 0)
+                )
+  ) %>% add_p()
+
+tx_ex
+```
+
+### Upset plot of inclusion
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+
+list_input = list(
+  any_asthma_DX = which(
+    as.logical(cp_df$flag_outcome_asthma_dx == 1)),
+  any_copd_DX = which(
+    as.logical(cp_df$flag_outcome_copd_dx == 1)),
+  any_pneumonia_DX = which(
+    as.logical(cp_df$flag_outcome_infectious_pneumonia_dx == 1)),
+  any_resp_failure_DX = which(
+    as.logical(cp_df$flag_outcome_respiratory_failure_dx == 1)),
+  any_med = which(
+    as.logical(cp_df$flag_outcome_med))
+)
+
+upset(fromList(list_input), nsets=90, order.by="freq")
+```
+
+### PPV Calculation
+
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+###############################################################
+## Bring in redcap data
+raw_redcap_ex_df = read.csv("...", check.names = T)
+colnames(redcap_inc_df)[1] = "redcap_record_id"
+
+# clean redcap inputs for quality
+filt_rerev_df = raw_redcap_ex_df %>% filter(
+  !is.na(ssid_e) & ssid_e != "",
+  !is.na(dob_e) & dob_e != "",
+  "m" %in% sex_e | "M" %in% sex_e,
+  exacerbation_complete == 2,
+  index_lab_e %in% c(0,1))
+
+###############################################################
+## Compute exacerbation outcome (LONG)
+
+# Get sum (GINA score) across each row per 5 medication reviews
+rerev_df = filt_rerev_df %>% mutate(
+  asth_first_sum =  select(., starts_with("a1_med")) %>% rowSums(na.rm = TRUE),
+  asth_second_sum = select(., starts_with("a2_med")) %>% rowSums(na.rm = TRUE),
+  asth_third_sum =  select(., starts_with("a3_med")) %>% rowSums(na.rm = TRUE),
+  asth_fourth_sum = select(., starts_with("a4_med_fu_e___")) %>% rowSums(na.rm = TRUE),
+  asth_fifth_sum =  select(., starts_with("a4_med_fu_e_2")) %>% rowSums(na.rm = TRUE)
+)
+# Get maximum GINA count
+rerev_df = rerev_df %>%
+  rowwise() %>%
+  mutate(
+    max_meds = max(c(asth_first_sum, asth_second_sum, asth_third_sum, asth_fourth_sum, asth_fifth_sum))
+  )
+# Check if the max is in the first medication review, else exacerbation
+rerev_df = rerev_df %>% 
+  ungroup() %>%
+  mutate(
+    asthma_med_rev_exacerb = case_when(
+      max_meds > asth_first_sum ~ 1,
+      T ~ 0
+    )
+  )
+
+# GOLD: like above but weighted. Issue with SAMA/biologic in the fields on redcap
+# can we proceed with what we have? just go ahead ignoring SAMA (4 categories)
+# focus on worsening to only (LABA), (LABA + LAMA), (LABA + LAMA + ICS)
+# Up-weight
+rerev_df$c2_med_fu_e___2 = 2*rerev_df$c2_med_fu_e___2
+rerev_df$c2_med_fu_e___3 = 2*rerev_df$c2_med_fu_e___3
+rerev_df$c2_med_fu_e___4 = 2*rerev_df$c2_med_fu_e___4
+rerev_df$c3_med_fu_e___2 = 3*rerev_df$c3_med_fu_e___2
+rerev_df$c3_med_fu_e___3 = 3*rerev_df$c3_med_fu_e___3
+rerev_df$c3_med_fu_e___4 = 3*rerev_df$c3_med_fu_e___4
+rerev_df$c4_med_fu_e___2 = 3*rerev_df$c4_med_fu_e___2
+rerev_df$c4_med_fu_e___3 = 3*rerev_df$c4_med_fu_e___3
+rerev_df$c4_med_fu_e___4 = 3*rerev_df$c4_med_fu_e___4
+
+# Get sum (GOLD score) across each row per 5 medication reviews
+rerev_df = rerev_df %>% mutate(
+  copd_first_sum =  select(., starts_with("a1_med")) %>% rowSums(na.rm = TRUE),
+  copd_second_sum = select(., starts_with("c2_med")) %>% rowSums(na.rm = TRUE),
+  copd_third_sum =  select(., starts_with("c3_med")) %>% rowSums(na.rm = TRUE),
+  copd_fourth_sum = select(., starts_with("c4_med_fu_e___")) %>% rowSums(na.rm = TRUE),
+  copd_fifth_sum =  select(., starts_with("a4_med_fu_e_2")) %>% rowSums(na.rm = TRUE)
+)
+# Get maximum GOLD count
+rerev_df = rerev_df %>%
+  rowwise() %>%
+  mutate(
+    max_meds_copd = max(c(copd_first_sum, copd_second_sum, copd_third_sum, copd_fourth_sum, copd_fifth_sum))
+  )
+# Check if the max is in the first medication review, else exacerbation
+rerev_df = rerev_df %>% 
+  ungroup() %>%
+  mutate(
+    copd_med_rev_exacerb = case_when(
+      max_meds_copd > copd_first_sum ~ 1,
+      T ~ 0
+    )
+  )
+
+# oneliner for new exacerb column:
+# NA HANDLE CASES
+rerev_df = rerev_df %>% mutate(
+  ns_asthma_prior_e = coalesce(ns_asthma_prior_e, 0),
+  ###
+  pl_dx_base_e  = coalesce(pl_dx_base_e, 0),
+  copd_dx_base  = coalesce(copd_dx_base, 0),
+  copd_dx_base_2  = coalesce(copd_dx_base_2, 0),
+  rx1_base  = coalesce(rx1_base, 0),
+  ###
+  a_ocs_e  = coalesce(a_ocs_e, 0),
+  copd_e  = coalesce(copd_e, 0),
+  pneum_e  = coalesce(pneum_e, 0),
+  resp_e  = coalesce(resp_e, 0),
+  c_ocs_e = coalesce(c_ocs_e, 0),
+  asthma_e  = coalesce(asthma_e, 0),
+  pneum_e_2  = coalesce(pneum_e_2, 0),
+  resp_e_2  = coalesce(resp_e_2, 0),
+  ###
+  asthma_med_rev_exacerb  = coalesce(asthma_med_rev_exacerb, 0),
+  copd_med_rev_exacerb  = coalesce(copd_med_rev_exacerb, 0)
+)
+
+rerev_df$new_exacerb =
+  # exclusion
+  !(rerev_df$ns_asthma_prior_e) &
+  # baseline something
+  (rerev_df$pl_dx_base_e | rerev_df$copd_dx_base | rerev_df$copd_dx_base_2 | rerev_df$rx1_base) &
+  # followup condition worsening/med class worsening
+  (rerev_df$a_ocs_e | rerev_df$copd_e | rerev_df$pneum_e | rerev_df$resp_e | rerev_df$c_ocs_e | rerev_df$asthma_e | rerev_df$pneum_e_2 | rerev_df$resp_e_2 |
+     rerev_df$asthma_med_rev_exacerb | rerev_df$copd_med_rev_exacerb)
+rerev_df = rerev_df %>% select(ssid_e, new_exacerb)
+
+###############################################################
+## Compute PPV (redcap only given CP+ cases)
+
+denom = rerev_df %>% nrow()
+tp = rerev_df %>% filter(new_exacerb == T) %>% nrow()
+
+print("PPV is # true positives / (false and true positive)")
+print(tp/denom)
+
+print("Sample size:")
+print(denom)
+```
+
+#### PPV bootstrap
+
+```{r}
+
+ppv_func_inc = function(data, indices) {
+  
+  sample_data = data[indices, ] # resample the data
+  denom = sample_data %>% nrow()
+  tp = sample_data %>% filter(new_exacerb == T) %>% nrow()
+  
+  #print("PPV is # true positives / (false and true positive)")
+  this_ppv = tp/denom
+  return(this_ppv)
+}
+results = boot::boot(data=rerev_df,
+                      statistic=ppv_func_inc,
+                      R=5000)
+
+# view results
+results
+plot(results)
+
+# get 95% confidence interval
+boot.ci(results, type="basic")
+```
+
+### Description of PPV cohort
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, eval=T}
+descrip_df = filt_rerev_df %>% select(
+  sex_e,
+  dob_e,
+  index_lab_negative_date_e,
+  index_lab_positive_date_e
+)
+
+descrip_df = descrip_df %>%
+  mutate(
+    dob_e = ymd(dob_e), # Convert to Date
+    index_lab_negative_date_e = ymd(index_lab_negative_date_e), # Convert to Date
+    index_lab_positive_date_e = ymd(index_lab_positive_date_e), # Convert to Date
+    index_date = coalesce(index_lab_negative_date_e, index_lab_positive_date_e), # Pick non-NA value
+    age_at_index = as.numeric(difftime(index_date, dob_e, units = "days")) / 365.25, # Calculate age
+    sex_unified = case_when(
+      sex_e == "Female" ~ "male",
+      sex_e == "Male" ~ "male",
+      sex_e == "female" ~ "female",
+      sex_e == "FEMALE" ~ "female",
+      sex_e == "M" ~ "male",
+      sex_e == "male " ~ "male",
+      sex_e == "male" ~ "male",
+      sex_e == "F" ~ "female",      
+      sex_e == "FEMALE " ~ "female",
+      sex_e == "MALE " ~ "male"
+    ),
+    age_brackets = case_when(
+      age_at_index < 40 ~ "20-39 years",
+      age_at_index < 55 ~ "40-54 years",
+      age_at_index < 65 ~ "55-64 years",
+      age_at_index < 75 ~ "65-74 years",
+      age_at_index < 85 ~ "75-84 years",
+      age_at_index >= 85 ~ "85+ years"
+    )
+  )
+
+descrip_df %>% select(sex_unified, age_brackets) %>% tbl_summary()
+```
+
+### Plot fig 2
+
+- from .xlsx input
+
+```{r}
+df = read_xlsx('...')
+df = df %>% mutate(
+  label = paste(outcome, strata, covid, sep = " "),
+  covid = recode(covid,
+                 "pos" = "(+)",
+                 "neg" = "(-)"),
+  strata = recode(strata,
+                  "nh" = "Not hospitalized",
+                  "hosp" = "Hospitalized",
+                  "all" = "All patients")
+)
+
+
+# Plot with custom colors
+inc_df = df %>% filter(outcome == "inc")
+ex_df = df %>% filter(outcome == "ex")
+
+ggplot(inc_df, aes(x = strata, y = point, ymin = lower, ymax = upper, fill = covid)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.6) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    position = position_dodge(width = 0.8), # Match this to geom_bar
+    width = 0.38,
+    linewidth = 0.8,
+    linetype = "solid",
+    alpha=0.4) +
+  geom_text(
+    aes(label = round(point, 1)),
+    position = position_dodge(width = 0.8),
+    hjust = 1.6,  # Adjusts text position to the right of the bar
+    size = 3.5
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("(-)" = "lightblue", "(+)" = "orange")) +
+  scale_y_continuous(breaks = seq(0, max(df$upper)+2, by = 2)) +
+  labs(
+    title = "Incidence",
+    x = "",
+    y = "Per 100",
+    fill = "COVID-19 Status"
+  ) +
+  theme_minimal()
+
+```
+
+
+
+
